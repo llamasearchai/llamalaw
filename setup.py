@@ -4,14 +4,14 @@ with open("README.md", "r", encoding="utf-8") as f:
     long_description = f.read()
 
 setup(
-    name="llamalaw",
+    name="llamalaw-llamasearch",
     version="0.1.0",
-    author="LlamaSearch.ai",
-    author_email="dev@llamasearch.ai",
+    author="LlamaSearch AI",
+    author_email="nikjois@llamasearch.ai",
     description="Legal contract analysis and management for LlamaSearch.ai",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/llamasearch/llamalaw",
+    url="https://llamasearch.ai",
     project_urls={
         "Bug Tracker": "https://github.com/llamasearch/llamalaw/issues",
         "Documentation": "https://docs.llamasearch.ai/llamalaw",
