@@ -72,7 +72,7 @@ llamalaw/
 pip install llamalaw
 
 # Or install from source
-git clone https://github.com/llamasearch/llamalaw.git
+git clone https://llamasearch.ai
 cd llamalaw
 pip install -e .
 ```
