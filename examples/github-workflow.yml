@@ -1,0 +1,142 @@
+name: Contract Analysis Workflow
+
+on:
+  push:
+    paths:
+      - 'contracts/**'
+  pull_request:
+    paths:
+      - 'contracts/**'
+  # Allow manual triggering
+  workflow_dispatch:
+  # Run weekly to check for new risks in existing contracts
+  schedule:
+    - cron: '0 0 * * 0'  # Every Sunday at midnight
+
+jobs:
+  analyze-contracts:
+    name: Analyze Contracts
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+      
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install llamalaw
+          pip install PyPDF2 python-docx  # Optional dependencies for document support
+      
+      - name: List Contracts
+        run: |
+          echo "Contracts to analyze:"
+          find contracts/ -type f \( -name "*.pdf" -o -name "*.docx" -o -name "*.txt" \) | sort
+      
+      - name: Analyze Contracts
+        id: analyze
+        run: |
+          mkdir -p reports
+          
+          # Find all contract files
+          CONTRACT_FILES=$(find contracts/ -type f \( -name "*.pdf" -o -name "*.docx" -o -name "*.txt" \))
+          
+          # Initialize summary file
+          echo "# Contract Analysis Summary" > reports/analysis_summary.md
+          echo "Generated on $(date)" >> reports/analysis_summary.md
+          echo "" >> reports/analysis_summary.md
+          echo "| Contract | Type | Risk Score | Critical | High | Medium | Low |" >> reports/analysis_summary.md
+          echo "|----------|------|------------|---------|------|--------|-----|" >> reports/analysis_summary.md
+          
+          # Initialize risk report
+          echo "# Contract Risk Report" > reports/risk_report.md
+          echo "Generated on $(date)" >> reports/risk_report.md
+          echo "" >> reports/risk_report.md
+          
+          # Analyze each contract
+          HIGH_RISK_COUNT=0
+          for CONTRACT in $CONTRACT_FILES; do
+            echo "Analyzing $CONTRACT..."
+            
+            # Run analysis and output to JSON
+            mkdir -p reports/details
+            BASENAME=$(basename "$CONTRACT")
+            llamalaw analyze "$CONTRACT" --output json > "reports/details/${BASENAME}.json"
+            
+            # Extract critical info using jq
+            TITLE=$(jq -r '.contract.title' "reports/details/${BASENAME}.json")
+            DOC_TYPE=$(jq -r '.document_type' "reports/details/${BASENAME}.json")
+            RISK_COUNT=$(jq -r '.risks | length' "reports/details/${BASENAME}.json")
+            
+            # Count risks by severity
+            CRITICAL_RISKS=$(jq -r '[.risks[] | select(.severity == "critical")] | length' "reports/details/${BASENAME}.json")
+            HIGH_RISKS=$(jq -r '[.risks[] | select(.severity == "high")] | length' "reports/details/${BASENAME}.json")
+            MEDIUM_RISKS=$(jq -r '[.risks[] | select(.severity == "medium")] | length' "reports/details/${BASENAME}.json")
+            LOW_RISKS=$(jq -r '[.risks[] | select(.severity == "low")] | length' "reports/details/${BASENAME}.json")
+            
+            # Calculate risk score
+            RISK_SCORE=$(jq -r '.metadata.risk_score // "N/A"' "reports/details/${BASENAME}.json")
+            
+            # Update summary report
+            echo "| $TITLE | $DOC_TYPE | $RISK_SCORE | $CRITICAL_RISKS | $HIGH_RISKS | $MEDIUM_RISKS | $LOW_RISKS |" >> reports/analysis_summary.md
+            
+            # Update risk report if high or critical risks exist
+            if [ "$CRITICAL_RISKS" -gt 0 ] || [ "$HIGH_RISKS" -gt 0 ]; then
+              HIGH_RISK_COUNT=$((HIGH_RISK_COUNT + CRITICAL_RISKS + HIGH_RISKS))
+              
+              echo "## $TITLE" >> reports/risk_report.md
+              echo "" >> reports/risk_report.md
+              echo "**Type:** $DOC_TYPE" >> reports/risk_report.md
+              echo "**File:** $CONTRACT" >> reports/risk_report.md
+              echo "" >> reports/risk_report.md
+              echo "### Critical and High Risks" >> reports/risk_report.md
+              echo "" >> reports/risk_report.md
+              
+              # Extract critical and high risks
+              jq -r '.risks[] | select(.severity == "critical" or .severity == "high") | "- **" + .description + "** (" + .severity + "): " + .recommendation' "reports/details/${BASENAME}.json" >> reports/risk_report.md
+              echo "" >> reports/risk_report.md
+            fi
+          done
+          
+          # Set output to use in other steps
+          echo "high_risk_count=$HIGH_RISK_COUNT" >> $GITHUB_OUTPUT
+      
+      - name: Upload Analysis Reports
+        uses: actions/upload-artifact@v3
+        with:
+          name: contract-analysis-reports
+          path: reports/
+          retention-days: 90
+      
+      - name: Check for Critical or High Risks
+        if: steps.analyze.outputs.high_risk_count > 0
+        run: |
+          echo "::warning::Found ${HIGH_RISK_COUNT} critical or high risk issues in contracts"
+          cat reports/risk_report.md
+          
+          # Option to fail the build if critical risks are found
+          # Uncomment the next line to enable
+          # exit 1
+      
+      - name: Create Issue for High Risks
+        if: steps.analyze.outputs.high_risk_count > 0 && github.event_name != 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const riskReport = fs.readFileSync('reports/risk_report.md', 'utf8');
+            
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Contract Analysis: ${steps.analyze.outputs.high_risk_count} critical/high risk issues found`,
+              body: riskReport,
+              labels: ['contract-risk', 'automated-report']
+            }); 
